@@ -1,44 +1,44 @@
 #!/usr/bin/env bash
 #
-# 一键检查并开启 VPS 的 SSH 服务，并配置 root 密码登录
+# Enable SSH on a VPS and allow root password login.
 #
-# 用法（在 VPS 上以 root 执行）：
-#   bash enable-ssh.sh '你的root新密码'
-#   ROOT_PASSWORD='你的root新密码' bash enable-ssh.sh
-#   bash enable-ssh.sh                # 交互式输入密码
+# Usage (as root on the VPS):
+#   bash enable-ssh.sh 'new-root-password'
+#   ROOT_PASSWORD='new-root-password' bash enable-ssh.sh
+#   bash enable-ssh.sh                # interactive password prompt
 #
-# 只做两件事：开启 SSH 服务、允许 root 密码登录。
+# This script only does two things: enable the SSH service and allow root password login.
 #
 set -uo pipefail
 
 C_RED=$'\033[31m'; C_GREEN=$'\033[32m'; C_YELLOW=$'\033[33m'; C_CYAN=$'\033[36m'; C_OFF=$'\033[0m'
-info() { printf '%s[信息]%s %s\n' "$C_CYAN" "$C_OFF" "$*"; }
-ok()   { printf '%s[完成]%s %s\n' "$C_GREEN" "$C_OFF" "$*"; }
-warn() { printf '%s[注意]%s %s\n' "$C_YELLOW" "$C_OFF" "$*"; }
-die()  { printf '%s[错误]%s %s\n' "$C_RED" "$C_OFF" "$*" >&2; exit 1; }
+info() { printf '%s[INFO]%s %s\n' "$C_CYAN" "$C_OFF" "$*"; }
+ok()   { printf '%s[ OK ]%s %s\n' "$C_GREEN" "$C_OFF" "$*"; }
+warn() { printf '%s[WARN]%s %s\n' "$C_YELLOW" "$C_OFF" "$*"; }
+die()  { printf '%s[FAIL]%s %s\n' "$C_RED" "$C_OFF" "$*" >&2; exit 1; }
 
-[ "$(id -u)" -eq 0 ] || die "请以 root 运行：sudo bash $0 '你的root新密码'"
+[ "$(id -u)" -eq 0 ] || die "must run as root: sudo bash $0 'new-root-password'"
 
-# ---------------------------------------------------------------- 1. 取密码
+# ------------------------------------------------------------- 1. get password
 NEW_PASSWORD="${1:-${ROOT_PASSWORD:-}}"
 if [ -z "$NEW_PASSWORD" ]; then
     if [ -t 0 ]; then
-        printf '请输入要设置的 root 密码：'
+        printf 'Enter new root password: '
         read -rs NEW_PASSWORD
-        printf '\n请再输入一次确认：'
+        printf '\nConfirm new root password: '
         read -rs CONFIRM
         printf '\n'
-        [ "$NEW_PASSWORD" = "$CONFIRM" ] || die "两次输入的密码不一致"
+        [ "$NEW_PASSWORD" = "$CONFIRM" ] || die "passwords do not match"
     else
-        die "未提供密码。用法：bash $0 '你的root新密码'"
+        die "no password given. usage: bash $0 'new-root-password'"
     fi
 fi
-[ -n "$NEW_PASSWORD" ] || die "密码不能为空"
+[ -n "$NEW_PASSWORD" ] || die "password must not be empty"
 case "$NEW_PASSWORD" in
-    *$'\n'*) die "密码中不能包含换行符" ;;
+    *$'\n'*) die "password must not contain a newline" ;;
 esac
 
-# ---------------------------------------------------------- 2. 识别系统类型
+# --------------------------------------------------------- 2. detect system
 SSHD_BIN=""
 for p in /usr/sbin/sshd /usr/local/sbin/sshd /sbin/sshd /usr/bin/sshd; do
     [ -x "$p" ] && SSHD_BIN="$p" && break
@@ -52,11 +52,11 @@ elif command -v apk     >/dev/null 2>&1; then PKG=apk
 elif command -v zypper  >/dev/null 2>&1; then PKG=zypper
 elif command -v pacman  >/dev/null 2>&1; then PKG=pacman
 fi
-info "包管理器：${PKG:-未识别}"
+info "package manager: ${PKG:-unknown}"
 
-# ------------------------------------------------------ 3. 安装 openssh-server
+# --------------------------------------------------- 3. install openssh-server
 install_sshd() {
-    info "未检测到 sshd，开始安装 openssh-server ..."
+    info "sshd not found, installing openssh-server ..."
     case "$PKG" in
         apt)    DEBIAN_FRONTEND=noninteractive apt-get update -qq && \
                 DEBIAN_FRONTEND=noninteractive apt-get install -y -qq openssh-server ;;
@@ -70,22 +70,22 @@ install_sshd() {
 }
 
 if [ -z "$SSHD_BIN" ]; then
-    install_sshd || die "安装 openssh-server 失败，请手动安装后重试"
+    install_sshd || die "failed to install openssh-server, install it manually and retry"
     for p in /usr/sbin/sshd /usr/local/sbin/sshd /sbin/sshd /usr/bin/sshd; do
         [ -x "$p" ] && SSHD_BIN="$p" && break
     done
-    [ -n "$SSHD_BIN" ] || die "安装后仍未找到 sshd"
+    [ -n "$SSHD_BIN" ] || die "sshd still not found after install"
 fi
-ok "sshd 路径：$SSHD_BIN"
+ok "sshd binary: $SSHD_BIN"
 
 SSH_DIR=/etc/ssh
 MAIN_CONF="$SSH_DIR/sshd_config"
 DROPIN_DIR="$SSH_DIR/sshd_config.d"
 DROPIN="$DROPIN_DIR/00-enable-ssh-root.conf"
-[ -e "$MAIN_CONF" ] || die "找不到 $MAIN_CONF"
+[ -e "$MAIN_CONF" ] || die "$MAIN_CONF not found"
 mkdir -p "$DROPIN_DIR"
 
-# ------------------------------------------------------ 4. 判断当前监听端口
+# ------------------------------------------------------ 4. detect listen port
 PORTS=""
 if "$SSHD_BIN" -T >/dev/null 2>&1; then
     PORTS=$("$SSHD_BIN" -T 2>/dev/null | awk '$1=="port"{print $2}' | sort -u | tr '\n' ' ')
@@ -93,43 +93,43 @@ fi
 [ -n "${PORTS// /}" ] || PORTS=$(awk 'tolower($1)=="port"{print $2}' "$MAIN_CONF" 2>/dev/null | tr '\n' ' ')
 PORTS="${PORTS:-22}"
 PORTS=$(printf '%s' "$PORTS" | tr -s ' ')
-info "当前 SSH 端口：$PORTS"
+info "current SSH port(s): $PORTS"
 
-# ------------------------------------------------- 5. 备份并写 sshd 配置
+# ------------------------------------------- 5. back up and write sshd config
 BACKUP="$MAIN_CONF.bak.enable-ssh"
 [ -e "$BACKUP" ] || cp -a "$MAIN_CONF" "$BACKUP"
-info "已备份原配置到 $BACKUP"
+info "original config backed up to $BACKUP"
 
-# 5.1 确保主配置顶部引入 sshd_config.d
+# 5.1 make sure the main config includes sshd_config.d
 if ! grep -qiE '^[[:space:]]*Include[[:space:]]+/etc/ssh/sshd_config\.d/\*\.conf' "$MAIN_CONF"; then
     TMP=$(mktemp)
     printf 'Include /etc/ssh/sshd_config.d/*.conf\n' > "$TMP"
     cat "$MAIN_CONF" >> "$TMP"
     cat "$TMP" > "$MAIN_CONF"
     rm -f "$TMP"
-    info "已在主配置顶部加入 Include 指令"
+    info "added Include directive at the top of the main config"
 fi
 
-# 5.2 注释掉主配置里与 root 密码登录冲突的旧指令
+# 5.2 comment out conflicting directives in the main config
 if grep -qiE '^[[:space:]]*(PermitRootLogin|PasswordAuthentication|KbdInteractiveAuthentication|ChallengeResponseAuthentication)' "$MAIN_CONF"; then
     sed -i -E 's|^[[:space:]]*(PermitRootLogin|PasswordAuthentication|KbdInteractiveAuthentication|ChallengeResponseAuthentication)|# [enable-ssh.sh] \1|I' "$MAIN_CONF"
-    info "已注释主配置中的冲突指令"
+    info "commented out conflicting directives in the main config"
 fi
 
-# 5.3 注释掉其它 drop-in 里冲突的指令（例如 cloud-init 写入的）
+# 5.3 comment out conflicting directives in other drop-ins (e.g. written by cloud-init)
 for f in "$DROPIN_DIR"/*.conf; do
     [ -e "$f" ] || continue
     [ "$f" = "$DROPIN" ] && continue
     if grep -qiE '^[[:space:]]*(PermitRootLogin|PasswordAuthentication|KbdInteractiveAuthentication|ChallengeResponseAuthentication)' "$f"; then
         [ -e "$f.bak.enable-ssh" ] || cp -a "$f" "$f.bak.enable-ssh"
         sed -i -E 's|^[[:space:]]*(PermitRootLogin|PasswordAuthentication|KbdInteractiveAuthentication|ChallengeResponseAuthentication)|# [enable-ssh.sh] \1|I' "$f"
-        info "已注释冲突配置：$f"
+        info "commented out conflicting config: $f"
     fi
 done
 
-# 5.4 写入本脚本的配置（00- 前缀保证最先被读取）
+# 5.4 write our own config (00- prefix so it is read first)
 cat > "$DROPIN" <<'SSHD_CONF'
-# 由 enable-ssh.sh 写入：开启 SSH 并允许 root 密码登录
+# written by enable-ssh.sh: enable SSH and allow root password login
 PermitRootLogin yes
 PasswordAuthentication yes
 KbdInteractiveAuthentication yes
@@ -138,37 +138,37 @@ PubkeyAuthentication yes
 UsePAM yes
 SSHD_CONF
 chmod 600 "$DROPIN"
-ok "已写入配置：$DROPIN"
+ok "config written: $DROPIN"
 
-# 5.5 语法检查，失败则回滚
+# 5.5 syntax check, roll back on failure
 if ! ERR=$("$SSHD_BIN" -t 2>&1); then
     printf '%s\n' "$ERR" >&2
     rm -f "$DROPIN"
     cat "$BACKUP" > "$MAIN_CONF"
-    die "sshd 配置校验失败，已回滚到原配置"
+    die "sshd config check failed, rolled back to the original config"
 fi
-ok "sshd 配置语法校验通过"
+ok "sshd config syntax check passed"
 
-# ------------------------------------------------------- 6. 设置 root 密码
-printf 'root:%s\n' "$NEW_PASSWORD" | chpasswd || die "设置 root 密码失败"
+# ------------------------------------------------------ 6. set root password
+printf 'root:%s\n' "$NEW_PASSWORD" | chpasswd || die "failed to set root password"
 passwd -u root >/dev/null 2>&1 || usermod -U root >/dev/null 2>&1 || true
 chage -E -1 -M 99999 root >/dev/null 2>&1 || true
 unset NEW_PASSWORD CONFIRM
-ok "root 密码已设置，账号已解锁"
+ok "root password set, account unlocked"
 
-# --------------------------------------------------------- 7. 放行 SSH 端口
+# --------------------------------------------------------- 7. open SSH port
 if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -qi '^Status: active'; then
     for p in $PORTS; do ufw allow "$p/tcp" >/dev/null 2>&1; done
-    ok "ufw 已放行端口：$PORTS"
+    ok "ufw: allowed port(s) $PORTS"
 elif command -v firewall-cmd >/dev/null 2>&1 && firewall-cmd --state >/dev/null 2>&1; then
     for p in $PORTS; do firewall-cmd --permanent --add-port="$p/tcp" >/dev/null 2>&1; done
     firewall-cmd --reload >/dev/null 2>&1
-    ok "firewalld 已放行端口：$PORTS"
+    ok "firewalld: allowed port(s) $PORTS"
 else
-    info "未检测到启用中的 ufw/firewalld，跳过防火墙放行"
+    info "no active ufw/firewalld found, skipping firewall rules"
 fi
 
-# --------------------------------------------------- 8. 启用并启动 SSH 服务
+# --------------------------------------------- 8. enable and start SSH service
 SVC=""
 if command -v systemctl >/dev/null 2>&1; then
     if systemctl list-unit-files 2>/dev/null | grep -q '^sshd\.service'; then SVC=sshd
@@ -182,24 +182,24 @@ if [ -n "$SVC" ]; then
     systemctl enable "$SVC" >/dev/null 2>&1 || true
     if systemctl restart "$SVC" >/dev/null 2>&1 || systemctl start "$SVC" >/dev/null 2>&1; then
         started=1
-        ok "已启用并重启服务：$SVC"
+        ok "service enabled and restarted: $SVC"
     fi
     if [ "$started" -eq 0 ] && [ "$SVC" = ssh ] && systemctl list-unit-files 2>/dev/null | grep -q '^ssh\.socket'; then
-        systemctl enable --now ssh.socket >/dev/null 2>&1 && started=1 && ok "已启用 ssh.socket"
+        systemctl enable --now ssh.socket >/dev/null 2>&1 && started=1 && ok "ssh.socket enabled"
     fi
 fi
 
 if [ "$started" -eq 0 ]; then
-    if   command -v service >/dev/null 2>&1 && service ssh restart >/dev/null 2>&1; then started=1; ok "已通过 service 重启 ssh"
-    elif command -v service >/dev/null 2>&1 && service sshd restart >/dev/null 2>&1; then started=1; ok "已通过 service 重启 sshd"
-    elif "$SSHD_BIN" >/dev/null 2>&1; then started=1; warn "已直接拉起 sshd 进程（无 systemd/service）"
+    if   command -v service >/dev/null 2>&1 && service ssh restart >/dev/null 2>&1; then started=1; ok "ssh restarted via service"
+    elif command -v service >/dev/null 2>&1 && service sshd restart >/dev/null 2>&1; then started=1; ok "sshd restarted via service"
+    elif "$SSHD_BIN" >/dev/null 2>&1; then started=1; warn "started sshd directly (no systemd/service)"
     fi
 fi
-[ "$started" -eq 1 ] || warn "无法启动 SSH 服务，请手动检查：systemctl status ${SVC:-ssh}"
+[ "$started" -eq 1 ] || warn "could not start SSH service, check: systemctl status ${SVC:-ssh}"
 
-# ------------------------------------------------------------ 9. 结果检查
+# ------------------------------------------------------------- 9. check result
 sleep 1
-printf '\n%s===== 检查结果 =====%s\n' "$C_GREEN" "$C_OFF"
+printf '\n%s===== RESULT =====%s\n' "$C_GREEN" "$C_OFF"
 
 listening=""
 if command -v ss >/dev/null 2>&1; then
@@ -211,24 +211,24 @@ fi
 listen_ok=0
 for p in $PORTS; do
     if printf '%s\n' "$listening" | grep -qE "[:.]$p\$"; then
-        ok "SSH 正在监听端口 $p"
+        ok "SSH is listening on port $p"
         listen_ok=1
     else
-        warn "未检测到端口 $p 在监听"
+        warn "port $p is not listening"
     fi
 done
 
 if pgrep -x sshd >/dev/null 2>&1; then
-    ok "sshd 进程运行中"
+    ok "sshd process is running"
 else
-    warn "未发现 sshd 进程"
+    warn "no sshd process found"
 fi
 
 EFFECTIVE=$("$SSHD_BIN" -T 2>/dev/null | awk '$1=="permitrootlogin"||$1=="passwordauthentication"{print $1" = "$2}')
-[ -n "$EFFECTIVE" ] && printf '生效配置：\n%s\n' "$EFFECTIVE"
+[ -n "$EFFECTIVE" ] && printf 'effective settings:\n%s\n' "$EFFECTIVE"
 
 IPS=$( { command -v ip >/dev/null 2>&1 && ip -4 addr show scope global 2>/dev/null | awk '/inet /{print $2}' | cut -d/ -f1; } | sort -u | tr '\n' ' ')
-printf '\n用下面任一条命令登录（端口取上面实际监听值）：\n'
+printf '\nlogin with any of these (use the port shown above):\n'
 for ip in $IPS; do
     for p in $PORTS; do
         if [ "$p" = "22" ]; then printf '  ssh root@%s\n' "$ip"
@@ -237,9 +237,9 @@ for ip in $IPS; do
 done
 
 if [ "$listen_ok" -eq 1 ]; then
-    ok "全部完成，root 密码登录已开启"
+    ok "done, root password login is enabled"
     exit 0
 else
-    warn "配置已写入，但未检测到监听，请检查安全组/云平台防火墙后再试"
+    warn "config written but nothing is listening, check your cloud security group and retry"
     exit 1
 fi
