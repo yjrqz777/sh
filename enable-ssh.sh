@@ -3,11 +3,10 @@
 # Enable SSH on a VPS and allow root password login.
 #
 # Usage (as root on the VPS):
-#   bash enable-ssh.sh 'new-root-password'
-#   ROOT_PASSWORD='new-root-password' bash enable-ssh.sh
-#   bash enable-ssh.sh                # interactive password prompt
+#   bash enable-ssh.sh
 #
-# This script only does two things: enable the SSH service and allow root password login.
+# This script only enables the SSH service and allows root password login.
+# It does NOT change the root password.
 #
 set -uo pipefail
 
@@ -17,28 +16,9 @@ ok()   { printf '%s[ OK ]%s %s\n' "$C_GREEN" "$C_OFF" "$*"; }
 warn() { printf '%s[WARN]%s %s\n' "$C_YELLOW" "$C_OFF" "$*"; }
 die()  { printf '%s[FAIL]%s %s\n' "$C_RED" "$C_OFF" "$*" >&2; exit 1; }
 
-[ "$(id -u)" -eq 0 ] || die "must run as root: sudo bash $0 'new-root-password'"
+[ "$(id -u)" -eq 0 ] || die "must run as root: sudo bash $0"
 
-# ------------------------------------------------------------- 1. get password
-NEW_PASSWORD="${1:-${ROOT_PASSWORD:-}}"
-if [ -z "$NEW_PASSWORD" ]; then
-    if [ -t 0 ]; then
-        printf 'Enter new root password: '
-        read -rs NEW_PASSWORD
-        printf '\nConfirm new root password: '
-        read -rs CONFIRM
-        printf '\n'
-        [ "$NEW_PASSWORD" = "$CONFIRM" ] || die "passwords do not match"
-    else
-        die "no password given. usage: bash $0 'new-root-password'"
-    fi
-fi
-[ -n "$NEW_PASSWORD" ] || die "password must not be empty"
-case "$NEW_PASSWORD" in
-    *$'\n'*) die "password must not contain a newline" ;;
-esac
-
-# --------------------------------------------------------- 2. detect system
+# ------------------------------------------------------------- 1. detect system
 SSHD_BIN=""
 for p in /usr/sbin/sshd /usr/local/sbin/sshd /sbin/sshd /usr/bin/sshd; do
     [ -x "$p" ] && SSHD_BIN="$p" && break
@@ -54,7 +34,7 @@ elif command -v pacman  >/dev/null 2>&1; then PKG=pacman
 fi
 info "package manager: ${PKG:-unknown}"
 
-# --------------------------------------------------- 3. install openssh-server
+# --------------------------------------------------- 2. install openssh-server
 install_sshd() {
     info "sshd not found, installing openssh-server ..."
     case "$PKG" in
@@ -85,7 +65,7 @@ DROPIN="$DROPIN_DIR/00-enable-ssh-root.conf"
 [ -e "$MAIN_CONF" ] || die "$MAIN_CONF not found"
 mkdir -p "$DROPIN_DIR"
 
-# ------------------------------------------------------ 4. detect listen port
+# ------------------------------------------------------ 3. detect listen port
 PORTS=""
 if "$SSHD_BIN" -T >/dev/null 2>&1; then
     PORTS=$("$SSHD_BIN" -T 2>/dev/null | awk '$1=="port"{print $2}' | sort -u | tr '\n' ' ')
@@ -95,12 +75,12 @@ PORTS="${PORTS:-22}"
 PORTS=$(printf '%s' "$PORTS" | tr -s ' ')
 info "current SSH port(s): $PORTS"
 
-# ------------------------------------------- 5. back up and write sshd config
+# ------------------------------------------- 4. back up and write sshd config
 BACKUP="$MAIN_CONF.bak.enable-ssh"
 [ -e "$BACKUP" ] || cp -a "$MAIN_CONF" "$BACKUP"
 info "original config backed up to $BACKUP"
 
-# 5.1 make sure the main config includes sshd_config.d
+# 4.1 make sure the main config includes sshd_config.d
 if ! grep -qiE '^[[:space:]]*Include[[:space:]]+/etc/ssh/sshd_config\.d/\*\.conf' "$MAIN_CONF"; then
     TMP=$(mktemp)
     printf 'Include /etc/ssh/sshd_config.d/*.conf\n' > "$TMP"
@@ -110,13 +90,13 @@ if ! grep -qiE '^[[:space:]]*Include[[:space:]]+/etc/ssh/sshd_config\.d/\*\.conf
     info "added Include directive at the top of the main config"
 fi
 
-# 5.2 comment out conflicting directives in the main config
+# 4.2 comment out conflicting directives in the main config
 if grep -qiE '^[[:space:]]*(PermitRootLogin|PasswordAuthentication|KbdInteractiveAuthentication|ChallengeResponseAuthentication)' "$MAIN_CONF"; then
     sed -i -E 's|^[[:space:]]*(PermitRootLogin|PasswordAuthentication|KbdInteractiveAuthentication|ChallengeResponseAuthentication)|# [enable-ssh.sh] \1|I' "$MAIN_CONF"
     info "commented out conflicting directives in the main config"
 fi
 
-# 5.3 comment out conflicting directives in other drop-ins (e.g. written by cloud-init)
+# 4.3 comment out conflicting directives in other drop-ins (e.g. written by cloud-init)
 for f in "$DROPIN_DIR"/*.conf; do
     [ -e "$f" ] || continue
     [ "$f" = "$DROPIN" ] && continue
@@ -127,7 +107,7 @@ for f in "$DROPIN_DIR"/*.conf; do
     fi
 done
 
-# 5.4 write our own config (00- prefix so it is read first)
+# 4.4 write our own config (00- prefix so it is read first)
 cat > "$DROPIN" <<'SSHD_CONF'
 # written by enable-ssh.sh: enable SSH and allow root password login
 PermitRootLogin yes
@@ -140,7 +120,7 @@ SSHD_CONF
 chmod 600 "$DROPIN"
 ok "config written: $DROPIN"
 
-# 5.5 syntax check, roll back on failure
+# 4.5 syntax check, roll back on failure
 if ! ERR=$("$SSHD_BIN" -t 2>&1); then
     printf '%s\n' "$ERR" >&2
     rm -f "$DROPIN"
@@ -149,14 +129,7 @@ if ! ERR=$("$SSHD_BIN" -t 2>&1); then
 fi
 ok "sshd config syntax check passed"
 
-# ------------------------------------------------------ 6. set root password
-printf 'root:%s\n' "$NEW_PASSWORD" | chpasswd || die "failed to set root password"
-passwd -u root >/dev/null 2>&1 || usermod -U root >/dev/null 2>&1 || true
-chage -E -1 -M 99999 root >/dev/null 2>&1 || true
-unset NEW_PASSWORD CONFIRM
-ok "root password set, account unlocked"
-
-# --------------------------------------------------------- 7. open SSH port
+# --------------------------------------------------------- 5. open SSH port
 if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -qi '^Status: active'; then
     for p in $PORTS; do ufw allow "$p/tcp" >/dev/null 2>&1; done
     ok "ufw: allowed port(s) $PORTS"
@@ -168,7 +141,7 @@ else
     info "no active ufw/firewalld found, skipping firewall rules"
 fi
 
-# --------------------------------------------- 8. enable and start SSH service
+# --------------------------------------------- 6. enable and start SSH service
 SVC=""
 if command -v systemctl >/dev/null 2>&1; then
     if systemctl list-unit-files 2>/dev/null | grep -q '^sshd\.service'; then SVC=sshd
@@ -197,7 +170,7 @@ if [ "$started" -eq 0 ]; then
 fi
 [ "$started" -eq 1 ] || warn "could not start SSH service, check: systemctl status ${SVC:-ssh}"
 
-# ------------------------------------------------------------- 9. check result
+# ------------------------------------------------------------- 7. check result
 sleep 1
 printf '\n%s===== RESULT =====%s\n' "$C_GREEN" "$C_OFF"
 
